@@ -49,6 +49,7 @@
 
 #define DEFAULT_WHEEL_CLICK_ANGLE 15
 #define DEFAULT_MIDDLE_BUTTON_SCROLL_TIMEOUT ms2us(200)
+#define DEFAULT_DEBOUNCE_TIMEOUT ms2us(50)
 
 enum evdev_key_type {
 	EVDEV_KEY_TYPE_NONE,
@@ -190,6 +191,24 @@ evdev_pointer_notify_physical_button(struct evdev_device *device,
 }
 
 static void
+evdev_button_debounce_finish(uint64_t time, struct evdev_device *device)
+{
+	if (device->debounce.state != LIBINPUT_BUTTON_STATE_PRESSED) {
+		pointer_notify_button(&device->base, time, device->debounce.button,
+		                      device->debounce.state);
+	}
+	device->debounce.timer_running = false;
+}
+
+static void
+evdev_button_debounce_timeout(uint64_t time, void *data)
+{
+	struct evdev_device *device = data;
+
+	evdev_button_debounce_finish (time, device);
+}
+
+static void
 evdev_pointer_post_button(struct evdev_device *device,
 			  uint64_t time,
 			  unsigned int button,
@@ -201,7 +220,20 @@ evdev_pointer_post_button(struct evdev_device *device,
 
 	if ((state == LIBINPUT_BUTTON_STATE_PRESSED && down_count == 1) ||
 	    (state == LIBINPUT_BUTTON_STATE_RELEASED && down_count == 0)) {
-		pointer_notify_button(&device->base, time, button, state);
+		if (device->debounce.timer_running) {
+			if (device->debounce.button != button) {
+				libinput_timer_cancel(&device->debounce.timer);
+				evdev_button_debounce_finish (time, device);
+			}
+		} else if (state == LIBINPUT_BUTTON_STATE_PRESSED) {
+			pointer_notify_button(&device->base, time, button, state);
+		}
+
+		libinput_timer_set(&device->debounce.timer,
+				   time + DEFAULT_DEBOUNCE_TIMEOUT);
+		device->debounce.timer_running = true;
+		device->debounce.button = button;
+		device->debounce.state = state;
 
 		if (state == LIBINPUT_BUTTON_STATE_RELEASED) {
 			if (device->left_handed.change_to_enabled)
@@ -2553,6 +2585,10 @@ evdev_configure_device(struct evdev_device *device)
 		if (evdev_is_fake_mt_device(device))
 			udev_tags &= ~EVDEV_UDEV_TAG_TOUCHSCREEN;
 	}
+
+	libinput_timer_init(&device->debounce.timer,
+			    evdev_libinput_context(device),
+			    evdev_button_debounce_timeout, device);
 
 	/* libwacom assigns touchpad (or touchscreen) _and_ tablet to the
 	   tablet touch bits, so make sure we don't initialize the tablet

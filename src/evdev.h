@@ -231,6 +231,13 @@ struct evdev_device {
 		uint32_t button_mask;
 		uint64_t first_event_time;
 	} middlebutton;
+
+	struct {
+		bool timer_running;
+		unsigned int button;
+		enum libinput_button_state state;
+		struct libinput_timer timer;
+	} debounce;
 };
 
 #define EVDEV_UNHANDLED_DEVICE ((struct evdev_device *) 1)
